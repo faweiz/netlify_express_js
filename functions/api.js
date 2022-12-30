@@ -20717,7 +20717,6 @@ module.exports = async function finish(item, transform, ...details) {
 "use strict";
 
 
-const http = __webpack_require__(/*! http */ "http")
 const Response = __webpack_require__(/*! ../response */ "../node_modules/serverless-http/lib/response.js");
 
 function common(cb) {
@@ -20731,14 +20730,6 @@ function common(cb) {
 }
 
 module.exports = function getFramework(app) {
-  if (app instanceof http.Server) {
-    return request => {
-      const response = new Response(request);
-      app.emit('request', request, response)
-      return response
-    }
-  }
-
   if (typeof app.callback === 'function') {
     return common(app.callback());
   }
@@ -20833,14 +20824,7 @@ function specialDecodeURIComponent(value)
     return value;
   }
 
-  let decoded;
-  try {
-    decoded = decodeURIComponent(value.replace(/[+]/g, "%20"));
-  } catch (err) {
-    decoded = value.replace(/[+]/g, "%20");
-  }
-
-  return decoded;
+  return decodeURIComponent(value.replace(/[+]/g, "%20"));
 }
 
 function recursiveURLDecode(value) {
@@ -20941,13 +20925,6 @@ function requestHeaders(event) {
     ? { cookie: event.cookies.join('; ') }
     : {};
 
-  if (event.multiValueHeaders) {
-    return Object.keys(event.multiValueHeaders).reduce((headers, key) => {
-      headers[key.toLowerCase()] = event.multiValueHeaders[key].join(", ")
-      return headers;
-    }, initialHeader);
-  }
-
   return Object.keys(event.headers).reduce((headers, key) => {
     headers[key.toLowerCase()] = event.headers[key];
     return headers;
@@ -20975,22 +20952,9 @@ function requestUrl(event) {
       search: event.rawQueryString,
     });
   }
-  // Normalize all query params into a single query string.
-  const query = event.multiValueQueryStringParameters || {};
-  if (event.queryStringParameters) {
-    Object.keys(event.queryStringParameters).forEach((key) => {
-      if (Array.isArray(query[key])) {
-        if (!query[key].includes(event.queryStringParameters[key])) {
-          query[key].push(event.queryStringParameters[key]);
-        }
-      } else {
-        query[key] = [event.queryStringParameters[key]];
-      }
-    });
-  }
   return URL.format({
     pathname: event.path,
-    query: query,
+    query: event.multiValueQueryStringParameters || event.queryStringParameters,
   });
 }
 
@@ -21047,6 +21011,10 @@ module.exports = (event, response, options) => {
   const { statusCode } = response;
   const {headers, multiValueHeaders } = sanitizeHeaders(Response.headers(response));
 
+  if (headers['transfer-encoding'] === 'chunked' || response.chunkedEncoding) {
+    throw new Error('chunked encoding not supported');
+  }
+
   let cookies = [];
 
   if (multiValueHeaders['set-cookie']) {
@@ -21055,20 +21023,7 @@ module.exports = (event, response, options) => {
 
   const isBase64Encoded = isBinary(headers, options);
   const encoding = isBase64Encoded ? 'base64' : 'utf8';
-  let body = Response.body(response).toString(encoding);
-
-  if (headers['transfer-encoding'] === 'chunked' || response.chunkedEncoding) {
-    const raw = Response.body(response).toString().split('\r\n');
-    const parsed = [];
-    for (let i = 0; i < raw.length; i +=2) {
-      const size = parseInt(raw[i], 16);
-      const value = raw[i + 1];
-      if (value) {
-        parsed.push(value.substring(0, size));
-      }
-    }
-    body = parsed.join('')
-  }
+  const body = Response.body(response).toString(encoding);
 
   let formattedResponse = { statusCode, headers, isBase64Encoded, body };
 
@@ -21152,10 +21107,6 @@ module.exports = function isBinary(headers, options) {
     return false;
   }
 
-  if (options.binary === true) {
-    return true
-  }
-
   if (typeof options.binary === 'function') {
     return options.binary(headers);
   }
@@ -21199,266 +21150,6 @@ module.exports = function sanitizeHeaders(headers) {
 
 /***/ }),
 
-/***/ "../node_modules/serverless-http/lib/provider/azure/clean-up-request.js":
-/*!******************************************************************************!*\
-  !*** ../node_modules/serverless-http/lib/provider/azure/clean-up-request.js ***!
-  \******************************************************************************/
-/*! no static exports found */
-/***/ (function(module, exports, __webpack_require__) {
-
-"use strict";
-
-
-function getUrl({ requestPath, url }) {
-    if (requestPath) {
-        return requestPath;
-    }
-
-    return typeof url === 'string' ? url : '/';
-}
-
-function getRequestContext(request) {
-    const requestContext = {};
-    requestContext.identity = {};
-    const forwardedIp = request.headers['x-forwarded-for'];
-    const clientIp = request.headers['client-ip'];
-    const ip = forwardedIp ? forwardedIp : (clientIp ? clientIp : '');
-    if (ip) {
-        requestContext.identity.sourceIp = ip.split(':')[0];
-    }
-    return requestContext;
-}
-
-module.exports = function cleanupRequest(req, options) {
-    const request = req || {};
-
-    request.requestContext = getRequestContext(req);
-    request.method = request.method || 'GET';
-    request.url = getUrl(request);
-    request.body = request.body || '';
-    request.headers = request.headers || {};
-
-    if (options.basePath) {
-        const basePathIndex = request.url.indexOf(options.basePath);
-
-        if (basePathIndex > -1) {
-            request.url = request.url.substr(basePathIndex + options.basePath.length);
-        }
-    }
-
-    return request;
-}
-
-/***/ }),
-
-/***/ "../node_modules/serverless-http/lib/provider/azure/create-request.js":
-/*!****************************************************************************!*\
-  !*** ../node_modules/serverless-http/lib/provider/azure/create-request.js ***!
-  \****************************************************************************/
-/*! no static exports found */
-/***/ (function(module, exports, __webpack_require__) {
-
-"use strict";
-
-
-const url = __webpack_require__(/*! url */ "url");
-
-const Request = __webpack_require__(/*! ../../request */ "../node_modules/serverless-http/lib/request.js");
-
-function requestHeaders(request) {
-    return Object.keys(request.headers).reduce((headers, key) => {
-        headers[key.toLowerCase()] = request.headers[key];
-        return headers;
-    }, {});
-}
-
-function requestBody(request) {
-    const type = typeof request.rawBody;
-
-    if (Buffer.isBuffer(request.rawBody)) {
-        return request.rawBody;
-    } else if (type === 'string') {
-        return Buffer.from(request.rawBody, 'utf8');
-    } else if (type === 'object') {
-        return Buffer.from(JSON.stringify(request.rawBody));
-    }
-
-    throw new Error(`Unexpected request.body type: ${typeof request.rawBody}`);
-}
-
-module.exports = (request) => {
-    const method = request.method;
-    const query = request.query;
-    const headers = requestHeaders(request);
-    const body = requestBody(request);
-
-    const req = new Request({
-        method,
-        headers,
-        body,
-        url: url.format({
-            pathname: request.url,
-            query
-        })
-    });
-    req.requestContext = request.requestContext;
-    return req;
-}
-
-
-/***/ }),
-
-/***/ "../node_modules/serverless-http/lib/provider/azure/format-response.js":
-/*!*****************************************************************************!*\
-  !*** ../node_modules/serverless-http/lib/provider/azure/format-response.js ***!
-  \*****************************************************************************/
-/*! no static exports found */
-/***/ (function(module, exports, __webpack_require__) {
-
-const isBinary = __webpack_require__(/*! ./is-binary */ "../node_modules/serverless-http/lib/provider/azure/is-binary.js");
-const Response = __webpack_require__(/*! ../../response */ "../node_modules/serverless-http/lib/response.js");
-const sanitizeHeaders = __webpack_require__(/*! ./sanitize-headers */ "../node_modules/serverless-http/lib/provider/azure/sanitize-headers.js");
-
-module.exports = (response, options) => {
-    const { statusCode } = response;
-    const headers = sanitizeHeaders(Response.headers(response));
-
-    if (headers['transfer-encoding'] === 'chunked' || response.chunkedEncoding) {
-        throw new Error('chunked encoding not supported');
-    }
-
-    const isBase64Encoded = isBinary(headers, options);
-    const encoding = isBase64Encoded ? 'base64' : 'utf8';
-    const body = Response.body(response).toString(encoding);
-
-    return { status: statusCode, headers, isBase64Encoded, body };
-}
-
-/***/ }),
-
-/***/ "../node_modules/serverless-http/lib/provider/azure/index.js":
-/*!*******************************************************************!*\
-  !*** ../node_modules/serverless-http/lib/provider/azure/index.js ***!
-  \*******************************************************************/
-/*! no static exports found */
-/***/ (function(module, exports, __webpack_require__) {
-
-const cleanupRequest = __webpack_require__(/*! ./clean-up-request */ "../node_modules/serverless-http/lib/provider/azure/clean-up-request.js");
-const createRequest = __webpack_require__(/*! ./create-request */ "../node_modules/serverless-http/lib/provider/azure/create-request.js");
-const formatResponse = __webpack_require__(/*! ./format-response */ "../node_modules/serverless-http/lib/provider/azure/format-response.js");
-
-module.exports = options => {
-    return getResponse => async (context, req) => {
-        const event = cleanupRequest(req, options);
-        const request = createRequest(event, options);
-        const response = await getResponse(request, context, event);
-        context.log(response);
-        return formatResponse(response, options);
-    }
-};
-
-/***/ }),
-
-/***/ "../node_modules/serverless-http/lib/provider/azure/is-binary.js":
-/*!***********************************************************************!*\
-  !*** ../node_modules/serverless-http/lib/provider/azure/is-binary.js ***!
-  \***********************************************************************/
-/*! no static exports found */
-/***/ (function(module, exports, __webpack_require__) {
-
-"use strict";
-
-
-const BINARY_ENCODINGS = ['gzip', 'deflate', 'br'];
-const BINARY_CONTENT_TYPES = (process.env.BINARY_CONTENT_TYPES || '').split(',');
-
-function isBinaryEncoding(headers) {
-  const contentEncoding = headers['content-encoding'];
-
-  if (typeof contentEncoding === 'string') {
-    return contentEncoding.split(',').some(value =>
-      BINARY_ENCODINGS.some(binaryEncoding => value.indexOf(binaryEncoding) !== -1)
-    );
-  }
-}
-
-function isBinaryContent(headers, options) {
-  const contentTypes = [].concat(options.binary
-    ? options.binary
-    : BINARY_CONTENT_TYPES
-  ).map(candidate =>
-    new RegExp(`^${candidate.replace(/\*/g, '.*')}$`)
-  );
-
-  const contentType = (headers['content-type'] || '').split(';')[0];
-  return !!contentType && contentTypes.some(candidate => candidate.test(contentType));
-}
-
-module.exports = function isBinary(headers, options) {
-  if (options.binary === false) {
-    return false;
-  }
-
-  if (options.binary === true) {
-    return true
-  }
-
-  if (typeof options.binary === 'function') {
-    return options.binary(headers);
-  }
-
-  return isBinaryEncoding(headers) || isBinaryContent(headers, options);
-};
-
-
-/***/ }),
-
-/***/ "../node_modules/serverless-http/lib/provider/azure/sanitize-headers.js":
-/*!******************************************************************************!*\
-  !*** ../node_modules/serverless-http/lib/provider/azure/sanitize-headers.js ***!
-  \******************************************************************************/
-/*! no static exports found */
-/***/ (function(module, exports, __webpack_require__) {
-
-"use strict";
-
-
-const setCookieVariations = __webpack_require__(/*! ./set-cookie.json */ "../node_modules/serverless-http/lib/provider/azure/set-cookie.json").variations;
-
-module.exports = function sanitizeHeaders(headers) {
-  return Object.keys(headers).reduce((memo, key) => {
-      const value = headers[key];
-
-      if (Array.isArray(value)) {
-        if (key.toLowerCase() === 'set-cookie') {
-          value.forEach((cookie, i) => {
-            memo[setCookieVariations[i]] = cookie;
-          });
-        } else {
-          memo[key] = value.join(', ');
-        }
-      } else {
-        memo[key] = value == null ? '' : value.toString();
-      }
-
-      return memo;
-    }, {});
-};
-
-
-/***/ }),
-
-/***/ "../node_modules/serverless-http/lib/provider/azure/set-cookie.json":
-/*!**************************************************************************!*\
-  !*** ../node_modules/serverless-http/lib/provider/azure/set-cookie.json ***!
-  \**************************************************************************/
-/*! exports provided: variations, default */
-/***/ (function(module) {
-
-module.exports = JSON.parse("{\"variations\":[\"set-cookie\",\"Set-cookie\",\"sEt-cookie\",\"SEt-cookie\",\"seT-cookie\",\"SeT-cookie\",\"sET-cookie\",\"SET-cookie\",\"set-Cookie\",\"Set-Cookie\",\"sEt-Cookie\",\"SEt-Cookie\",\"seT-Cookie\",\"SeT-Cookie\",\"sET-Cookie\",\"SET-Cookie\",\"set-cOokie\",\"Set-cOokie\",\"sEt-cOokie\",\"SEt-cOokie\",\"seT-cOokie\",\"SeT-cOokie\",\"sET-cOokie\",\"SET-cOokie\",\"set-COokie\",\"Set-COokie\",\"sEt-COokie\",\"SEt-COokie\",\"seT-COokie\",\"SeT-COokie\",\"sET-COokie\",\"SET-COokie\",\"set-coOkie\",\"Set-coOkie\",\"sEt-coOkie\",\"SEt-coOkie\",\"seT-coOkie\",\"SeT-coOkie\",\"sET-coOkie\",\"SET-coOkie\",\"set-CoOkie\",\"Set-CoOkie\",\"sEt-CoOkie\",\"SEt-CoOkie\",\"seT-CoOkie\",\"SeT-CoOkie\",\"sET-CoOkie\",\"SET-CoOkie\",\"set-cOOkie\",\"Set-cOOkie\",\"sEt-cOOkie\",\"SEt-cOOkie\",\"seT-cOOkie\",\"SeT-cOOkie\",\"sET-cOOkie\",\"SET-cOOkie\",\"set-COOkie\",\"Set-COOkie\",\"sEt-COOkie\",\"SEt-COOkie\",\"seT-COOkie\",\"SeT-COOkie\",\"sET-COOkie\",\"SET-COOkie\",\"set-cooKie\",\"Set-cooKie\",\"sEt-cooKie\",\"SEt-cooKie\",\"seT-cooKie\",\"SeT-cooKie\",\"sET-cooKie\",\"SET-cooKie\",\"set-CooKie\",\"Set-CooKie\",\"sEt-CooKie\",\"SEt-CooKie\",\"seT-CooKie\",\"SeT-CooKie\",\"sET-CooKie\",\"SET-CooKie\",\"set-cOoKie\",\"Set-cOoKie\",\"sEt-cOoKie\",\"SEt-cOoKie\",\"seT-cOoKie\",\"SeT-cOoKie\",\"sET-cOoKie\",\"SET-cOoKie\",\"set-COoKie\",\"Set-COoKie\",\"sEt-COoKie\",\"SEt-COoKie\",\"seT-COoKie\",\"SeT-COoKie\",\"sET-COoKie\",\"SET-COoKie\",\"set-coOKie\",\"Set-coOKie\",\"sEt-coOKie\",\"SEt-coOKie\",\"seT-coOKie\",\"SeT-coOKie\",\"sET-coOKie\",\"SET-coOKie\",\"set-CoOKie\",\"Set-CoOKie\",\"sEt-CoOKie\",\"SEt-CoOKie\",\"seT-CoOKie\",\"SeT-CoOKie\",\"sET-CoOKie\",\"SET-CoOKie\",\"set-cOOKie\",\"Set-cOOKie\",\"sEt-cOOKie\",\"SEt-cOOKie\",\"seT-cOOKie\",\"SeT-cOOKie\",\"sET-cOOKie\",\"SET-cOOKie\",\"set-COOKie\",\"Set-COOKie\",\"sEt-COOKie\",\"SEt-COOKie\",\"seT-COOKie\",\"SeT-COOKie\",\"sET-COOKie\",\"SET-COOKie\",\"set-cookIe\",\"Set-cookIe\",\"sEt-cookIe\",\"SEt-cookIe\",\"seT-cookIe\",\"SeT-cookIe\",\"sET-cookIe\",\"SET-cookIe\",\"set-CookIe\",\"Set-CookIe\",\"sEt-CookIe\",\"SEt-CookIe\",\"seT-CookIe\",\"SeT-CookIe\",\"sET-CookIe\",\"SET-CookIe\",\"set-cOokIe\",\"Set-cOokIe\",\"sEt-cOokIe\",\"SEt-cOokIe\",\"seT-cOokIe\",\"SeT-cOokIe\",\"sET-cOokIe\",\"SET-cOokIe\",\"set-COokIe\",\"Set-COokIe\",\"sEt-COokIe\",\"SEt-COokIe\",\"seT-COokIe\",\"SeT-COokIe\",\"sET-COokIe\",\"SET-COokIe\",\"set-coOkIe\",\"Set-coOkIe\",\"sEt-coOkIe\",\"SEt-coOkIe\",\"seT-coOkIe\",\"SeT-coOkIe\",\"sET-coOkIe\",\"SET-coOkIe\",\"set-CoOkIe\",\"Set-CoOkIe\",\"sEt-CoOkIe\",\"SEt-CoOkIe\",\"seT-CoOkIe\",\"SeT-CoOkIe\",\"sET-CoOkIe\",\"SET-CoOkIe\",\"set-cOOkIe\",\"Set-cOOkIe\",\"sEt-cOOkIe\",\"SEt-cOOkIe\",\"seT-cOOkIe\",\"SeT-cOOkIe\",\"sET-cOOkIe\",\"SET-cOOkIe\",\"set-COOkIe\",\"Set-COOkIe\",\"sEt-COOkIe\",\"SEt-COOkIe\",\"seT-COOkIe\",\"SeT-COOkIe\",\"sET-COOkIe\",\"SET-COOkIe\",\"set-cooKIe\",\"Set-cooKIe\",\"sEt-cooKIe\",\"SEt-cooKIe\",\"seT-cooKIe\",\"SeT-cooKIe\",\"sET-cooKIe\",\"SET-cooKIe\",\"set-CooKIe\",\"Set-CooKIe\",\"sEt-CooKIe\",\"SEt-CooKIe\",\"seT-CooKIe\",\"SeT-CooKIe\",\"sET-CooKIe\",\"SET-CooKIe\",\"set-cOoKIe\",\"Set-cOoKIe\",\"sEt-cOoKIe\",\"SEt-cOoKIe\",\"seT-cOoKIe\",\"SeT-cOoKIe\",\"sET-cOoKIe\",\"SET-cOoKIe\",\"set-COoKIe\",\"Set-COoKIe\",\"sEt-COoKIe\",\"SEt-COoKIe\",\"seT-COoKIe\",\"SeT-COoKIe\",\"sET-COoKIe\",\"SET-COoKIe\",\"set-coOKIe\",\"Set-coOKIe\",\"sEt-coOKIe\",\"SEt-coOKIe\",\"seT-coOKIe\",\"SeT-coOKIe\",\"sET-coOKIe\",\"SET-coOKIe\",\"set-CoOKIe\",\"Set-CoOKIe\",\"sEt-CoOKIe\",\"SEt-CoOKIe\",\"seT-CoOKIe\",\"SeT-CoOKIe\",\"sET-CoOKIe\",\"SET-CoOKIe\",\"set-cOOKIe\",\"Set-cOOKIe\",\"sEt-cOOKIe\",\"SEt-cOOKIe\",\"seT-cOOKIe\",\"SeT-cOOKIe\",\"sET-cOOKIe\",\"SET-cOOKIe\",\"set-COOKIe\",\"Set-COOKIe\",\"sEt-COOKIe\",\"SEt-COOKIe\",\"seT-COOKIe\",\"SeT-COOKIe\",\"sET-COOKIe\",\"SET-COOKIe\",\"set-cookiE\",\"Set-cookiE\",\"sEt-cookiE\",\"SEt-cookiE\",\"seT-cookiE\",\"SeT-cookiE\",\"sET-cookiE\",\"SET-cookiE\",\"set-CookiE\",\"Set-CookiE\",\"sEt-CookiE\",\"SEt-CookiE\",\"seT-CookiE\",\"SeT-CookiE\",\"sET-CookiE\",\"SET-CookiE\",\"set-cOokiE\",\"Set-cOokiE\",\"sEt-cOokiE\",\"SEt-cOokiE\",\"seT-cOokiE\",\"SeT-cOokiE\",\"sET-cOokiE\",\"SET-cOokiE\",\"set-COokiE\",\"Set-COokiE\",\"sEt-COokiE\",\"SEt-COokiE\",\"seT-COokiE\",\"SeT-COokiE\",\"sET-COokiE\",\"SET-COokiE\",\"set-coOkiE\",\"Set-coOkiE\",\"sEt-coOkiE\",\"SEt-coOkiE\",\"seT-coOkiE\",\"SeT-coOkiE\",\"sET-coOkiE\",\"SET-coOkiE\",\"set-CoOkiE\",\"Set-CoOkiE\",\"sEt-CoOkiE\",\"SEt-CoOkiE\",\"seT-CoOkiE\",\"SeT-CoOkiE\",\"sET-CoOkiE\",\"SET-CoOkiE\",\"set-cOOkiE\",\"Set-cOOkiE\",\"sEt-cOOkiE\",\"SEt-cOOkiE\",\"seT-cOOkiE\",\"SeT-cOOkiE\",\"sET-cOOkiE\",\"SET-cOOkiE\",\"set-COOkiE\",\"Set-COOkiE\",\"sEt-COOkiE\",\"SEt-COOkiE\",\"seT-COOkiE\",\"SeT-COOkiE\",\"sET-COOkiE\",\"SET-COOkiE\",\"set-cooKiE\",\"Set-cooKiE\",\"sEt-cooKiE\",\"SEt-cooKiE\",\"seT-cooKiE\",\"SeT-cooKiE\",\"sET-cooKiE\",\"SET-cooKiE\",\"set-CooKiE\",\"Set-CooKiE\",\"sEt-CooKiE\",\"SEt-CooKiE\",\"seT-CooKiE\",\"SeT-CooKiE\",\"sET-CooKiE\",\"SET-CooKiE\",\"set-cOoKiE\",\"Set-cOoKiE\",\"sEt-cOoKiE\",\"SEt-cOoKiE\",\"seT-cOoKiE\",\"SeT-cOoKiE\",\"sET-cOoKiE\",\"SET-cOoKiE\",\"set-COoKiE\",\"Set-COoKiE\",\"sEt-COoKiE\",\"SEt-COoKiE\",\"seT-COoKiE\",\"SeT-COoKiE\",\"sET-COoKiE\",\"SET-COoKiE\",\"set-coOKiE\",\"Set-coOKiE\",\"sEt-coOKiE\",\"SEt-coOKiE\",\"seT-coOKiE\",\"SeT-coOKiE\",\"sET-coOKiE\",\"SET-coOKiE\",\"set-CoOKiE\",\"Set-CoOKiE\",\"sEt-CoOKiE\",\"SEt-CoOKiE\",\"seT-CoOKiE\",\"SeT-CoOKiE\",\"sET-CoOKiE\",\"SET-CoOKiE\",\"set-cOOKiE\",\"Set-cOOKiE\",\"sEt-cOOKiE\",\"SEt-cOOKiE\",\"seT-cOOKiE\",\"SeT-cOOKiE\",\"sET-cOOKiE\",\"SET-cOOKiE\",\"set-COOKiE\",\"Set-COOKiE\",\"sEt-COOKiE\",\"SEt-COOKiE\",\"seT-COOKiE\",\"SeT-COOKiE\",\"sET-COOKiE\",\"SET-COOKiE\",\"set-cookIE\",\"Set-cookIE\",\"sEt-cookIE\",\"SEt-cookIE\",\"seT-cookIE\",\"SeT-cookIE\",\"sET-cookIE\",\"SET-cookIE\",\"set-CookIE\",\"Set-CookIE\",\"sEt-CookIE\",\"SEt-CookIE\",\"seT-CookIE\",\"SeT-CookIE\",\"sET-CookIE\",\"SET-CookIE\",\"set-cOokIE\",\"Set-cOokIE\",\"sEt-cOokIE\",\"SEt-cOokIE\",\"seT-cOokIE\",\"SeT-cOokIE\",\"sET-cOokIE\",\"SET-cOokIE\",\"set-COokIE\",\"Set-COokIE\",\"sEt-COokIE\",\"SEt-COokIE\",\"seT-COokIE\",\"SeT-COokIE\",\"sET-COokIE\",\"SET-COokIE\",\"set-coOkIE\",\"Set-coOkIE\",\"sEt-coOkIE\",\"SEt-coOkIE\",\"seT-coOkIE\",\"SeT-coOkIE\",\"sET-coOkIE\",\"SET-coOkIE\",\"set-CoOkIE\",\"Set-CoOkIE\",\"sEt-CoOkIE\",\"SEt-CoOkIE\",\"seT-CoOkIE\",\"SeT-CoOkIE\",\"sET-CoOkIE\",\"SET-CoOkIE\",\"set-cOOkIE\",\"Set-cOOkIE\",\"sEt-cOOkIE\",\"SEt-cOOkIE\",\"seT-cOOkIE\",\"SeT-cOOkIE\",\"sET-cOOkIE\",\"SET-cOOkIE\",\"set-COOkIE\",\"Set-COOkIE\",\"sEt-COOkIE\",\"SEt-COOkIE\",\"seT-COOkIE\",\"SeT-COOkIE\",\"sET-COOkIE\",\"SET-COOkIE\",\"set-cooKIE\",\"Set-cooKIE\",\"sEt-cooKIE\",\"SEt-cooKIE\",\"seT-cooKIE\",\"SeT-cooKIE\",\"sET-cooKIE\",\"SET-cooKIE\",\"set-CooKIE\",\"Set-CooKIE\",\"sEt-CooKIE\",\"SEt-CooKIE\",\"seT-CooKIE\",\"SeT-CooKIE\",\"sET-CooKIE\",\"SET-CooKIE\",\"set-cOoKIE\",\"Set-cOoKIE\",\"sEt-cOoKIE\",\"SEt-cOoKIE\",\"seT-cOoKIE\",\"SeT-cOoKIE\",\"sET-cOoKIE\",\"SET-cOoKIE\",\"set-COoKIE\",\"Set-COoKIE\",\"sEt-COoKIE\",\"SEt-COoKIE\",\"seT-COoKIE\",\"SeT-COoKIE\",\"sET-COoKIE\",\"SET-COoKIE\",\"set-coOKIE\",\"Set-coOKIE\",\"sEt-coOKIE\",\"SEt-coOKIE\",\"seT-coOKIE\",\"SeT-coOKIE\",\"sET-coOKIE\",\"SET-coOKIE\",\"set-CoOKIE\",\"Set-CoOKIE\",\"sEt-CoOKIE\",\"SEt-CoOKIE\",\"seT-CoOKIE\",\"SeT-CoOKIE\",\"sET-CoOKIE\",\"SET-CoOKIE\",\"set-cOOKIE\",\"Set-cOOKIE\",\"sEt-cOOKIE\",\"SEt-cOOKIE\",\"seT-cOOKIE\",\"SeT-cOOKIE\",\"sET-cOOKIE\",\"SET-cOOKIE\",\"set-COOKIE\",\"Set-COOKIE\",\"sEt-COOKIE\",\"SEt-COOKIE\",\"seT-COOKIE\",\"SeT-COOKIE\",\"sET-COOKIE\",\"SET-COOKIE\"]}");
-
-/***/ }),
-
 /***/ "../node_modules/serverless-http/lib/provider/get-provider.js":
 /*!********************************************************************!*\
   !*** ../node_modules/serverless-http/lib/provider/get-provider.js ***!
@@ -21467,11 +21158,9 @@ module.exports = JSON.parse("{\"variations\":[\"set-cookie\",\"Set-cookie\",\"sE
 /***/ (function(module, exports, __webpack_require__) {
 
 const aws = __webpack_require__(/*! ./aws */ "../node_modules/serverless-http/lib/provider/aws/index.js");
-const azure = __webpack_require__(/*! ./azure */ "../node_modules/serverless-http/lib/provider/azure/index.js");
 
 const providers = {
-  aws,
-  azure
+  aws
 };
 
 module.exports = function getProvider(options) {
@@ -21565,7 +21254,7 @@ function getString(data) {
 }
 
 function addData(stream, data) {
-  if (Buffer.isBuffer(data) || typeof data === 'string' || data instanceof Uint8Array) {
+  if (Buffer.isBuffer(data) || typeof data === 'string') {
     stream[BODY].push(Buffer.from(data));
   } else {
     throw new Error(`response.write() of unexpected type: ${typeof data}`);

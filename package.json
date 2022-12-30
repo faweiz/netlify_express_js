@@ -4,18 +4,19 @@
   "description": "",
   "main": "./src/api.js",
   "scripts": {
-    "start": "NODE_ENV=development netlify-lambda serve src",
-    "build": "NODE_ENV=production netlify-lambda build src"
-   },
+    "start": "nodemon server-local.js",
+    "build": "netlify-lambda build src"
+  },
   "author": "",
   "license": "ISC",
   "dependencies": {
     "express": "^4.17.1",
     "netlify-cli": "^12.5.0",
-    "netlify-lambda": "^1.4.3",
+    "netlify-lambda": "^1.6.3",
+    "nodemon": "^2.0.20",
     "serverless-http": "^2.7.0"
   },
   "engines": {
-    "node" : "14.1.0"
+    "node": "14.1.0"
   }
 }
